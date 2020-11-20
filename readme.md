@@ -12,6 +12,10 @@ Your questions and observations are very welcome!
 
 If you must sting, please also be nice. But above all, please be accurate.
 
+I'd like to thank everyone who joined in the [HN discussion](https://news.ycombinator.com/item?id=22106482) of this document and pointed out or stimulated many interesting points that I had missed. I'm humbled and grateful for the tremendously positive and constructive feedback I received. Y'all rock.
+
+This is [all public domain](https://github.com/fpereiro/backendlore#license); take whatever you find useful.
+
 ## The approach
 
 My approach to backends (as with code in general) is to iteratively strive for simplicity. This approach - and a share of good luck - has enabled me to write lean, solid and maintainable server code with a relatively small time investment and minimal hardware resources.
@@ -33,14 +37,14 @@ The simplest version of the architecture is that for local development. It looks
 ```
 Architecture A
 
-               ____local ubuntu box_______________________________
-              |                                                  |
-internet <----|----------------> node <------> local filesystem  |
-(localhost)   |                    |\                            |
-              |                    | --------> redis             |
-              |                    \                             |
-              |                     -----------------------------|---> AWS S3 & SES
-              |__________________________________________________|
+              ┌──╌ local ubuntu box ╌────────────────────────────┐
+              │                                                  │
+internet <────┼────────────────> node <──────> local filesystem  │
+(localhost)   │                   ┬ ┬                            │
+              │                   │ └────────> redis             │
+              │                   │                              │
+              │                   └──────────────────────────────┼───> AWS S3 & SES
+              └──────────────────────────────────────────────────┘
 ```
 
 The simplest version of the architecture on a remote environment (a server connected to the internet with a public IP address) looks like this:
@@ -48,25 +52,27 @@ The simplest version of the architecture on a remote environment (a server conne
 ```
 Architecture B
 
-               ____remote ubuntu box______________________________
-              |                                                  |
-internet <----|--> nginx <-----> node <------> local filesystem  |
-              |                    |\                            |
-              |                    | --------> redis ------------|--------|
-              |                    \                             |        v
-              |                     -----------------------------|---> AWS S3 & SES
-              |__________________________________________________|
+              ┌──╌ remote ubuntu box ╌───────────────────────────┐
+              │                                                  │
+internet <────┼──> nginx <─────> node <──────> local filesystem  │
+              │                   ┬ ┬                            │
+              │                   │ └────────> redis <───────────┼────────┐
+              │                   │                              │        v
+              │                   └──────────────────────────────┼───> AWS S3 & SES
+              └──────────────────────────────────────────────────┘
 ```
 
-nginx works as a [reverse proxy](https://en.wikipedia.org/wiki/Reverse_proxy). Its main use is to provide HTTPS support - in particular, HTTPS support with nginx is extremely easy to configure with [Let's Encrypt](https://letsencrypt.org/) free, automated and open certificates. For more about HTTPS and nginx, please refer to the [HTTPS section](https://github.com/fpereiro/backendlore/HTTPS).
+nginx works as a [reverse proxy](https://en.wikipedia.org/wiki/Reverse_proxy). Its main use is to provide HTTPS support - in particular, HTTPS support with nginx is extremely easy to configure with [Let's Encrypt](https://letsencrypt.org/) free, automated and open certificates. For more about HTTPS and nginx, please refer to the [HTTPS section](https://github.com/fpereiro/backendlore#HTTPS).
 
 This architecture, which runs everything on a single Ubuntu instance (node, redis, and access to the local filesystem) can take you surprisingly far. It is definitely sufficient as a test environment. It can also serve as the production environment of a [MVP](https://en.wikipedia.org/wiki/Minimum_viable_product) or even of an application with moderate use that is not mission critical.
 
 redis can be replaced or complemented by another NoSQL database (such as [MongoDB](https://www.mongodb.com/)) or a relational database (such as [Postgres](https://www.postgresql.org/)). Throughout this section, where you see *redis*, feel free to replace it with the database you might want to use.
 
+node should be stateless; or rather, store all its state in redis and the FS. This allows for easier scaling later (see below); more importantly, by storing state explicitly (either in redis or in the FS), the overall structure is much easier to understand and debug.
+
 Notice that there's an arrow connecting redis to AWS. This reflects the (highly recommended) possibility of periodically and automatically uploading redis dumps to AWS S3, to restore the database from a snapshot in case of an issue.
 
-Relying on the local FS is optional, since we're also using AWS S3. For a discussion, see the [File section](https://github.com/fpereiro/backendlore/file).
+Relying on the local FS is optional, since we're also using AWS S3. For a discussion, see the [File section](https://github.com/fpereiro/backendlore#file).
 
 The performance of this simple setup can be outstanding. I have personally witnessed virtual instances (which have significantly less power than a comparable dedicated server) with 4-8 cores and 4-8GB of RAM handling over a thousand requests per second (100M requests per day) with sub-10 millisecond latencies. Unless your application logic is CPU intensive, performance should not be a reason for changing this architecture unless you expect your load to be closer to a billion requests per day.
 
@@ -79,21 +85,24 @@ An architecture with several instances of node running is of course possible, in
 
 ```
 Architecture C
-                                        ___api_1____
-                                        |           |
-                                   /----|-> node <--|----\/---> AWS S3 & SES <-------
-                                   |    |___________|    |                          |
-                                   |                     |                          |
-               _load balancer_     |    ___api_2____     |    ___data_server___     |
-              |               |    |    |           |    |    |                |    |
-internet <----|---> nginx <---|---------|-> node <--|---------|--> FS server   |    |
-              |_______________|         |___________|         |\-> redis ------|----|
-                                                              |________________|
+
+                                        ┌─╌ api─1 ╌─┐
+                                        │           │
+                                   ┌────┼─> node <──┼────┬──> AWS S3 & SES <─────┐
+                                   │    └───────────┘    │                       │
+                                   │                     │                       │
+              ┌╌ load balancer ╌┐  │    ┌─╌ api─2 ╌─┐    │  ┌─╌ data─server ╌─┐  │
+              │                 │  │    │           │    │  │                 │  │
+internet <────┼────> nginx <────┼──┴────┼─> node <──┼────┴──┼─┬─> FS server   │  │
+              └─────────────────┘       └───────────┘       │ └─> redis <─────┼──┘
+                                                            └─────────────────┘
 ```
 
 Notice that we now have a data server, comprising both a database and files. This seems to reflect a pattern that has been repeated since the very beginnings of computing, where there are always two types of storage (one fast and small, another one larger and slower). redis and the FS serve as the particular incarnations of this pattern within our architecture.
 
-In Architecture C, a further modification is necessary: instead of relying on local access to the filesystem, a node server must act as a filesystem server. It should implement routes for reading, writing, listing and deleting files. In my experience, this logic can be done in 100-200 lines, but the code must be written down carefully. If the data server is publicly accessible, redis must be secured through either a password or (better) through [spiped](https://www.tarsnap.com/spiped.html); the FS server, meanwhile, will probably have to use either a password in a header or (better) an auth system with cookies to authorize/deny access.
+Because all nodes refer to the data server for all its state (including sessions), any request can be served by any node; which node serves it is inconsequential. This sidesteps the need for [sticky sessions](https://en.wikipedia.org/wiki/Load_balancing_(computing)#Persistence).
+
+In Architecture C, a further modification is necessary: instead of relying on local access to the filesystem, a node server must act as a filesystem server. It should implement routes for reading, writing, listing and deleting files. In my experience, this logic can be done in 100-200 lines, but the code must be written down carefully. If the data server is publicly accessible, redis must be secured through either a password or (better) through [spiped](https://www.tarsnap.com/spiped.html); the FS server, meanwhile, will probably have to use either a password in a header or (better) an auth system with cookies to authorize/deny access. These security provisions are only necessary if the data server is accessible from the broader internet, but if you use AWS VPC (or any other means to restrict network access to the data server), this is unnecessary.
 
 In either case, the FS server will also communicate with AWS S3 and will handle its contents.
 
@@ -101,16 +110,17 @@ It is highly recommended that redis should have a follower/slave replica on a se
 
 ```
 Architecture D
-                                        ___api_1____
-                                        |           |
-                                   /----|-> node <--|----\/---> AWS S3 & SES <-----
-                                   |    |___________|    |                        |
-                                   |                     |                        |
-               _load balancer_     |    ___api_2____     |    ___data_server_1_   |   __data_server_2_
-              |               |    |    |           |    |    |                |  |   |               |
-internet <----|---> nginx <---|---------|-> node <--|---------|--> FS server   |  |   |    redis      |
-              |_______________|         |___________|         |\-> redis <-----|------|--> replica    |
-                                                              |________________|      |_______________|
+
+                                        ┌─╌ api─1 ╌─┐
+                                        │           │
+                                   ┌────┼─> node <──┼────┬──> AWS S3 & SES <───────┐
+                                   │    └───────────┘    │                         │
+                                   │                     │                         │
+              ┌╌ load balancer ╌┐  │    ┌─╌ api─2 ╌─┐    │  ┌─╌ data─server-1 ╌─┐  │  ┌─╌ data─server-2 ╌─┐
+              │                 │  │    │           │    │  │                   │  │  │                   │
+internet <────┼────> nginx <────┼──┴────┼─> node <──┼────┴──┼─┬─> FS server     │  │  │    redis          │
+              └─────────────────┘       └───────────┘       │ └─> redis <───────┼──┴──┼──> replica        │
+                                                            └───────────────────┘     └───────────────────┘
 ```
 
 With n node servers, it is possible to scale horizontally, to improve performance and avoid an outage if one of the node servers is down.
@@ -123,6 +133,29 @@ The truly difficult thing to scale (and where you should be very careful with ve
 
 Here it is essential to be aware of the [CAP theorem](https://en.wikipedia.org/wiki/CAP_theorem). When we partition a database into multiple nodes that are connected through the internet (and thus are susceptible to delays or errors in their communication), we can only choose between **consistency** and **availability**. You can either decide to respond to all requests and risk serving & storing inconsistent data, or you can choose to remain fully consistent at the price of having some downtime. This hard choice is an interesting one. Most of the solutions out there, including [redis cluster](https://redis.io/topics/cluster-spec) favor availability over consistency. Whatever solution you use, it should be one of the default ways in which your database of choice is meant to scale, unless you **really** know what you're doing.
 
+```
+Architecture E
+
+                                        ┌─╌ api─1 ╌─┐
+                                        │           │
+                                   ┌────┼─> node <──┼────┬──> AWS S3 & SES <────────┐
+                                   │    └───────────┘    │                          │
+                                   │                     │                          │
+              ┌╌ load balancer ╌┐  │    ┌─╌ api─2 ╌─┐    │  ┌─╌ data─server-1a ╌─┐  │  ┌─╌ data─server-1b ╌─┐
+              │                 │  │    │           │    │  │                    │  │  │                    │
+internet <────┼────> nginx <────┼──┴────┼─> node <──┼────┴──┼─┬─> FS server 1    │  │  │    redis 1         │
+              └─────────────────┘       └───────────┘    │  │ └─> redis 1 <──────┼──┴──┼──> replica         │
+                                                         │  └────────────────────┘  │  └────────────────────┘
+                                                         │                          │
+                                                         │  ┌─╌ data─server-2a ╌─┐  │  ┌─╌ data─server-2b ╌─┐
+                                                         │  │                    │  │  │                    │
+                                                         └──┼─┬─> FS server 2    │  │  │    redis 2         │
+                                                            │ └─> redis 2 <──────┼──┴──┼──> replica         │
+                                                            └────────────────────┘     └────────────────────┘
+```
+
+Below are a few more notes about [database partitioning](https://github.com/fpereiro/backendlore#db-partitioning).
+
 ## HTTPS
 
 Providing HTTPS support with node is possible, but in my experience it is quite more cumbersome. Using nginx seems to reduce the overall complexity of the architecture & setup.
@@ -134,9 +167,14 @@ Using nginx to receive all requests also has the advantage that our node server 
 To configure HTTPS with nginx: if you own a domain `DOMAIN` (could be either a domain (`mydomain.com`) or a subdomain (`app.mydomain.com`)) and its main A record is pointing to the IP of an Ubuntu server under your control, here's how you can set up HTTPS (be sure to replace occurrences of `DOMAIN` with your actual domain :):
 
 ```
+sudo apt-get install certbot python3-certbot-nginx -y
+```
+
+Note: in old versions of ubuntu you might have to run these two commands before installing certbot:
+
+```
 sudo add-apt-repository ppa:certbot/certbot -y
 sudo apt-get update
-sudo apt-get install python-certbot-nginx -y
 ```
 
 In the file `/etc/nginx/sites-available/default`, change `server_name` to `DOMAIN`.
@@ -146,7 +184,16 @@ sudo service nginx reload
 sudo certbot --nginx -d DOMAIN
 ```
 
-Add the following line to your crontab file (through `sudo crontab -e`: `M H * * * sudo certbot renew`, where `M` is a number between 0 and 59 and `H` is a number between 0 and 23. This command ensures that every day, at the specified hour, the certificates will be updated automatically so that they don't expire.
+For forwarding traffic from nginx to a local node, I use this nginx configuration snippet within a `server` block. If you use it, please replace `PORT` with the port where your node server is listening.
+
+```
+   location / {
+      proxy_pass http://127.0.0.1:PORT/;
+      proxy_set_header X-Forwarded-For $remote_addr;
+   }
+```
+
+The `proxy_set_header` line sends to node the IP address of whoever made the request, which is useful for security purposes (like detecting an abnormal geographic location in a login, or a repeated source of malicious requests).
 
 ## Redis
 
@@ -154,7 +201,11 @@ Redis is an amazing choice for database. While it may not be the best choice for
 
 Redis is much more than a key-value store: it is a server that implements data structures in memory. In practice, this means that you have access to fundamental constructs like lists, hashes, sets. These data structures are implemented with amazing quality, consistency and performance.
 
+If you work with [mission critical data](https://m.signalvnoise.com/your-software-just-isnt-mission-critical/) (financial transactions, healthcare), I suggest working instead with a relational database that fulfills the [ACID properties](https://en.wikipedia.org/wiki/ACID) and has a very high probability of not losing data ever. As far as I know, redis can guarantee `ACI`, but cannot guarantee `D` to the same extent (at least not if you're running a single node).
+
 As stated above in the Architecture section, it is highly recommended that [RDB persistence](https://redis.io/topics/persistence) (and possibly AOF) should be turned on. I highly recommend backing up redis dumps into AWS S3, instead of just locally - this can be done by the node instance itself.
+
+Because redis is an in-memory database, if either redis (or the underlying instance) is restarted you'll almost certainly lose a few seconds of data (the data written to memory yet not committed to a RDB/AOF files, which are on the disk and will survive a restart). It is critical that neither redis nor the instance where it runs should be randomly restarted. The deeper causes for accidental restarts should be analyzed and eliminated. In seven years of using redis, I've never experienced a restart coming from redis itself (or a redis bug, for that matter); but I have experienced Docker and the OS restarting redis because of memory limits.
 
 I recommend writing down in the readme the key structure used by your application in redis. Here's [an example](https://github.com/altocodenl/acpic#redis-structure).
 
@@ -190,7 +241,7 @@ Whether you go with using the local FS, a single FS server or a full-fledged sca
 
 The application logic lives in node. Node serves all incoming requests through an HTTP API.
 
-An HTTP API allows us to serve, with the same code, the needs of a user facing UI (either web or native), an admin and also programmatic access by third parties. We get all three for the price of one.
+An HTTP API allows us to serve, with the same code, the needs of a user facing UI (either web or native), an admin and also programmatic access by third parties. We get all three for the price of one, as long as the web clients (user-facing and admin) perform client-side rendering. If, however, your application does server side rendering, adding an HTTP API might entail extra work. I personally embrace a 100% client-side rendering approach, but that's outside of the scope of backend lore.
 
 The data transmitted between client and server is of two types:
 
@@ -243,9 +294,12 @@ I find it useful to have a single function, `notify`, to report errors or warnin
 I suggest invoking the notify function in the following cases:
 - Master process fails.
 - Worker process fails.
+- Database fails or is unreachable.
 - Server starts.
 - Client transmission errors.
 - Client is replied with an error code (>= 400).
+
+Lately I'm not relying on local logs anymore; instead, I'm sending all logs to a separate log server that stores the logs as permanent files, and makes them accessible and searchable through a web admin. A saner person would probably use an established logging service. As an [attentive reader pointed out](https://github.com/fpereiro/backendlore/issues/5), we're redirecting the standard output of node to `/tmp`, which means that the logs won't be preserved after a restart. This is by design, because then we don't have the risk of logs filling up the disk (which is something that happens way more often than usually expected - enough to require another moving part, [log rotation](https://en.wikipedia.org/wiki/Log_rotation)). The other advantage of not having local logs is that you don't have to ssh to different servers to see what's going on. This approach, however, requires that all important data should be logged, including (and perhaps foremost) uncaught exceptions and error stacktraces.
 
 ## Code structure
 
@@ -311,7 +365,87 @@ where `ENV` is `dev` or `prod`.
 
 You can place most of these commands on a single `provision.sh` file, or create different files for provisioning different machines. To me, the important thing is to have a set and unambiguous set of commands that will run successfully and which represent the entire configuration needed in the instance. There should be no unspecified or unwritten steps for provisioning an instance.
 
+If you want to store the logs of your application within the server itself, please change the log path in `mongroup.conf` to another location other than `/tmp`. If you do this, I highly recommend you set up log rotation. For more on logging, please see the [Notification](https://github.com/fpereiro/backendlore#notification) section.
+
 As long as you fully control the remote instances/servers, I don't see a need for running the application within [Docker](https://www.docker.com/) or any other sort of virtualization. Since the full environment is replicable (starting with a given OS, you run a certain number of commands to reach a provisioned instance), there's no idempotence benefit to virtualization. And by running the service on the host itself, everything else is simpler. I can only recommend virtualization if you're deploying to environments you don't fully control.
+
+## Keeping the server fresh
+
+If you are running an Architecture of type B and don't mind a couple of minutes of downtime per week, a way to keep your instances fresh is to run a script (which I call `refresh.sh`) like this every week, which will 1) upgrade software packages; 2) stop your app gracefully; 3) stop redis gracefully; 4) restart your instance.
+
+Whether this is strictly necessary is debatable. At a superficial level, it's not inviting to ssh into an instance that greets you with the message *system restart required*. Even in contexts where software is written with quality in mind, running processes tend to become more fragile over time - and this includes the OS itself, particularly in the case of any Linux (I suspect that OpenBSD might be more likely to run forever without issues). Restarting the processes periodically might be a crude but effective way to reboot the "aging" of a runtime. The internet itself is resilient because it expects failures, instead of trying to prevent them; in this vein, having systems that can recover from reboots feels like a step in the right direction. I'm open to debate here, particularly if you have practical experience in this regard.
+
+**Warning**: Before showing you `refresh.sh`, please bear in mind that **I don't do this** on the instance(s) where I run the production database of an application with a significant amount of traffic & data - that is, I don't do this on the data servers on Architectures C and D. If you do this, you should also turn off all your nodes beforehand, to avoid serving requests with 500 errors or triggering the alerts - ignoring alerts is a very dangerous practice. In general, a coordinated and automatic outage sounds daunting and I have never implemented it. I don't have a good answer to this problem; all I know is that relying on the production database server/instance never being updated or restarted is also a fragile approach - if only because you can never rely on your instance never failing. My approach so far is to perform these operations manually, every couple months, with adrenaline pumping, after checking the backups, and they always entail downtime. I hope to have a better solution in the future.
+
+In larger setups with multiple nodes, you can use this approach on the instances running node without experiencing downtime, as long as you don't restart all the node instances at the same time.
+
+OK, enough warnings, here goes `refresh.sh`:
+
+```
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"
+apt-get update && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --with-new-pkgs && apt-get autoremove -y && apt-get clean
+cd /path/to/yourapp && mg stop
+service redis-server stop
+shutdown -r now
+```
+
+Notice that the app is stopped before redis is stopped, to avoid serving requests with 500 errors and to not trigger your alerts indicating that the database is unreachable. If you're running this script on an instance that only runs node, you can omit the fourth line since there's no redis there.
+
+For this to work, your instance needs to start your application automatically. For this, another script (which I call `start.sh`) is needed:
+
+```
+cd /path/to/yourapp && mg restart
+```
+
+Then, you can put two entries in the crontab. You must replace `M`, `H` and `D` with the minutes, hour and day of the week where you want to perform the `refresh`, and also change the paths to indicate where the scripts are. Before leaving this in place, execute the script yourself to make sure it's working as intended!
+
+```
+M H * * D /path/to/refresh.sh
+@reboot /path/to/start.sh
+```
+
+## DB partitioning
+
+Splitting the data in a database into parts is called [*sharding*](https://en.wikipedia.org/wiki/Shard_(database_architecture)). That name gives me chills; a *shard* is [defined](https://en.wiktionary.org/wiki/shard) as *A piece of broken glass or pottery, especially one found in an archaeological dig* and in my mind's eye evokes the sight of broken glass, which is pretty much the last thing I want to see when talking about the main repository of information of a large application with potentially thousands or millions of users. For this reason, I will use the term *partitioning* (which usually has a FS connotation); and instead of *shards*, I will speak of *nodes*. If you're offended about this, you very likely know way more about distributed databases and should not pay attention to what I'm saying anyway.
+
+Notice that partitioning is unrelated to whether you have read-only replicas of a database. For example, I wouldn't consider an architecture with a single redis master and a single redis replica attached to it to be an architecture with a partitioned database. If you had two redis master databases which both can process writes, then you'd be looking at a partitioned architecture.
+
+My experience with partitioned databases is slim - I only worked once in such a context. We did a manual type of partitioning, where we stored only certain types of data on one database and certain other types of data on the other one (this is called [vertical partitioning](https://en.wikipedia.org/wiki/Partition_(database))). The reason for this was the sheer size of the database, which it being Redis, was not easy to fit in memory if we had it all in one server.
+
+Since I can only talk about my experience, I'm unable to suggest how to perform DB partitioning, especially if you're using relational databases.
+
+Most of the time, there are standard solutions for partitioning that are intimately linked to the database you're using, and developed and promoted by the database vendors. Using this is probably much saner than rolling out your own partitioning. In any case, before adopting any partitioning scheme, I do suggest understanding the answers to the following questions:
+
+- Does the database partition itself automatically or is it done manually? If so, how easy it is to do it?
+- Is it as easy to reduce scale (merge partitions) as it is to create them?
+- Is there downtime when scaling up/down? Or perhaps performance degradation? Is there any chance of losing consistency while this takes place?
+- Is data distributed randomly across partitions? Can you decide where to store data?
+- Does the partitioning compromise the usual [guarantees](https://en.wikipedia.org/wiki/ACID) that your database provides (atomicity, consistency, isolation, durability)? Does it render transactions impossible?
+- In case of a node failing, is there a total write/read failure, a total write failure, a partial write failure, or possible inconsistencies later?
+- How can you backup and recover your entire cluster of databases from scratch? Can you shut down the system cleanly and then recreate it somewhere else?
+
+## Making structural changes to a production database
+
+My experience with changing the structure of production databases is entirely within the NoSQL orbit (mostly Redis and a little bit of MongoDB). Whenever I worked with relational databases, I wasn't the one in charge of performing database migrations (although I have written a couple).
+
+Relational databases have quite sturdy mechanisms for performing updates to the schema of a table. NoSQL databases, generally, do not, so things can go irreversibly bad much easier. For this reason, I have a protocol that I follow when modifying the structure a production database in a system that is running. Generally, this entails no downtime, unless the change I'm performing can affect the data's consistency - in which case, the API needs to be turned off and the changes made when the database is not receiving any other requests.
+
+This protocol is probably overkill for relational databases, though I'm not sure; if in doubt, please go ask someone who has had to do this type of thing with relational databases. If you're running updates on a NoSQL database, this might come in handy.
+
+1. Write the script that performs the changes to the database. In my case, it is usually a single function that performs the necessary changes in the structure of the data.
+2. Test it against a local or dev environment with some data. Get it working reasonably well.
+3. Use a recent production backup and restore it either locally or in a dev environment that can hold all the data.
+4. Debug the script against the replica database with production data you created in #3. You might have to recreate the data several times, and this is fine; think that each time you do it on a dev environment, it is sparing you from committing that very mistake on a production database which thousands or millions depend on.
+5. Add automated sanity checks to the end of your script, and make sure that it all looks good after the script runs. Make a final clean run and check that the script does it all correctly in one go, without further intervention on your part. Eschew manual touch-ups, since those are *very easy* to forget later.
+6. Commit your script (if you haven't done it already) somewhere in your repo, so you know exactly what script you ran.
+7. If your script affects the consistency of the data, you might have to turn off all traffic.
+8. Run a full backup of the production database.
+9. Check that the backup you just created can be recreated on the dev environment you created in #3. If it takes a few minutes, so be it. You want to trust this backup.
+10. Take a deep breath. Run the script against the production database. While the script runs, consider whether this adrenaline rush isn't entirely unrelated to your choice of working with backends. When the script is done, be slow, systematic and make sure to interpret the sanity checks correctly.
+11. Something failed? Restore the production database from the backup you created in #8. Don't freak out. This is exactly why you made the backup in the first place.
+12. Nothing failed! Hurray! Turn on the APIs again. Make sure the traffic is flowing smoothly. Why do you always have to be so paranoid?
+
+This process is the single most stressful controlled backend task that you probably will encounter. I also find it exhilarating.
 
 ## Deploying the server
 
@@ -339,19 +473,24 @@ I eschew automatic code deployment triggered by a commit to a certain repository
 
 Identity is managed by the server itself, without reliance on external services. User data is stored in the database.
 
-It is absolutely critical to hash user passwords. I recommend using [bcryptjs](https://www.npmjs.com/package/cookie-parser).
+It is absolutely critical to hash user passwords. I recommend using [bcryptjs](https://www.npmjs.com/package/bcryptjs).
 
 Side note: wherever possible, I use pure js modules and avoid those that have C++ bindings. The latter sometimes require native packages to be installed and in my experience tend to be more fickle. js code only needs the runtime and its dependencies to run, and no compilation.
 
-Cookies are used to identify a session. The session itself is a quantity that is cryptographically hard to guess. The cookie name is predetermined in the configuration (for example, `myappname`); its value is the session itself. The session doesn't contain any user information - this is stored in the database.
+Cookies are used to identify a session. The session itself is a quantity that is cryptographically hard to guess. The cookie name is predetermined in the configuration (for example, `myappname`); its value is the session itself. The session doesn't contain any user information - all user information is stored in the database.
 
-Currently, the cookie is accessible by client-side javascript; the main use case for this is to send it back as an extra field in POST requests (be them JSON or `multipart/form-data`) as [CSRF prevention](https://en.wikipedia.org/wiki/Cross-site_request_forgery). This pattern is called [double submit cookie pattern](https://medium.com/cross-site-request-forgery-csrf/double-submit-cookie-pattern-65bb71d80d9f).
+Recently I have enabled the [`HttpOnly`](https://owasp.org/www-community/HttpOnly) attribute on the cookie, so that it is not accessible by client-side js. The main reason for this is that if the app is ever victim of [XSS](https://en.wikipedia.org/wiki/Cross-site_scripting) through malicious user content that I've failed to filter, users won't be fully vulnerable (otherwise the session, which is a temporary password-equivalent, would be immediately available to the attacker).
 
-Lately, however, I have decided to change the cookie to be httponly (which means that cannot be seen by client-side js) and provide the client with a separate CSRF token. The main reason for this is that if the app is ever victim of [XSS](https://es.wikipedia.org/wiki/Cross-site_scripting) through malicious user content that I've failed to filter, users will be fully vulnerable. I'd rather have an extra layer of security to protect my users at the cost of more code and a somewhat higher complexity. *Future work: I haven't implemented yet this change since I'm still finding an elegant way to generate, use and clean up CSRF tokens.*
+To enable [CSRF prevention](https://en.wikipedia.org/wiki/Cross-site_request_forgery), I create a CSRF token bound to a particular session; this token is sent by the server on a successful login, and also through an endpoint where the client can request a CSRF token - this endpoint also serves as a way for the client to ask the server whether its currently logged in. The CSRF token is sent along with every `POST` request (actually, any request that could perform changes). A CSRF token might not be necessary if you're not supporting older browsers - for a discussion on alternatives, see [here](https://github.com/fpereiro/backendlore/issues/12) and [here](https://news.ycombinator.com/item?id=22114820).
 
 Cookies are also signed. The session within the cookie should not be easily guessable, so signing it doesn't make it harder to guess. The reason for signing them, however, is that this allows us to distinguish a cookie that was valid but has now expired from an invalid cookie. In other words, we can distinguish an expired session from an attack without having to keep all expired sessions in the database.
 
-*Future work: it might be interesting to see if signing cookies with salts (random quantities) per user (instead of using a global salt) would increase security. The only extra cost would be to store an extra quantity per user in the database.*
+Here's how I deal with the cookie/session lifecycle:
+- I set cookies to expire the distant future (through the `Expires` attribute), and then let the server decide when a cookie has expired; when an expired session is received (as determined by the server), the server replies with a 403 and orders the browser to delete the cookie. In this way, I don't have to guess when a cookie will expire and the server retains full control over their lifecycle.
+- Sessions have an expiry period (could be n hours or n days); after that session *hasn't been used* for that period of time, it expires and is removed. Since redis has an in-built mechanism for expiring keys after a period of time, this happens automatically without extra code.
+- Every time a session is used, it is automatically renewed. This avoids a user being kicked out of the session while they are using it.
+
+Besides `HttpOnly` and `Expires`, I set the `Path` attribute of the cookie since otherwise the cookie doesn't seem to be preserved when all tabs of the browser are closed.
 
 ## Routes
 
@@ -396,8 +535,11 @@ In case a worker node fails, it is recommended to use the `uncaughtException` ha
 ```javascript
 if (! cluster.isMaster) return process.on ('uncaughtException', function (error) {
    notify (error);
+   process.exit (1);
 });
 ```
+
+It is important also to exit the worker process in case it suffered an uncaught exception, since the exception potentially renders the process unstable.
 
 ## Master tasks
 
@@ -415,7 +557,7 @@ To keep the code fluid and short, whenever I'm replying to a request with JSON d
 
 ## Validation & auto-activation
 
-I consider it indispensable that every route that receives data should do perform a deep validation of it. If a payload breaks a server, whether inadvertently or maliciously, it is the server's fault. This is embodied in the concept of [auto-activation](https://github.com/fpereiro/teishi#auto-activation).
+I consider it indispensable that every route that receives data should perform a deep validation of it. If a payload breaks a server, whether inadvertently or maliciously, it is the server's fault. This is embodied in the concept of [auto-activation](https://github.com/fpereiro/teishi#auto-activation).
 
 For performing validations, I use a combination of [teishi](https://github.com/fpereiro/teishi) and custom code. Checks are usually done first synchronously, and then sometimes asynchronously against data stored in the database (which necessarily has to be reached asynchronously).
 
@@ -437,7 +579,7 @@ I use [ETags](https://en.wikipedia.org/wiki/HTTP_ETag); to compute this cache he
 
 Since we're writing HTTP APIs, it makes sense to test them through HTTP requests. I use [hitit](https://github.com/fpereiro/hitit), which is a tool that triggers HTTP requests.
 
-My style of testing is end to end - the API is test from the outside only. Any internals are tested through the outcomes that they provide to the routes that use them. If an internal is convoluted enough, it should be moved to its own module and have its own tests, but so far I haven't seen the need for this - code seems to become either an application or a [separate tool](https://github.com/fpereiro/ustack).
+My style of testing is end to end - the API is tested from the outside only. Any internals are tested through the outcomes that they provide to the routes that use them. If an internal is convoluted enough, it should be moved to its own module and have its own tests, but so far I haven't seen the need for this - code seems to become either an application or a [separate tool](https://github.com/fpereiro/ustack).
 
 Whenever a test fails, the entire suite fails. No errors or warnings are tolerated. The test suite either passes or it does not.
 
@@ -457,13 +599,62 @@ Tests are run manually: `node test`, while the server is already running.
 
 ## Development cycle
 
-First, I write the server routes.
+First, I write the server routes along with their documentation.
 
 Then, I write the tests.
 
-For each route, first I try to break it. When I can't break it, I send different payloads that should cover all the main cases.
+For each route, first I try to break it. When I can't break it, I send different payloads that should cover all its main cases.
 
 Once the tests are passing, the backend is ready. Time to write the client; and any bugs you'll find will very likely be in the client, since the server is debugged. In this way, errors don't have to be chased on both sides of the wire.
+
+## Vagrant
+
+If you don't want to install node or redis in your host machine, or you're not running Ubuntu, you can use Vagrant to set up a local ubuntu on which you can develop your application. Below is a sample `Vagrantfile` to set up an Ubuntu VM with redis & node installed.
+
+Please note that this will be useful only for your local environment, not to provision remote instances.
+
+```
+Vagrant.configure("2") do |config|
+
+   # Use Ubuntu 18.04
+   config.vm.box = "ubuntu/bionic64"
+
+   # Use 4GB of RAM and 2 cores
+   config.vm.provider "virtualbox" do |v|
+      v.memory = 4096
+      v.cpus = 2
+   end
+
+   # Map server port (if it's not 8000, replace it with the port on which your node server will listen)
+   config.vm.network "forwarded_port", guest: 8000, host: 8000
+
+   config.vm.provision "shell", inline: <<-SHELL
+
+      # Always login as root
+      grep -qxF 'sudo su -' /home/vagrant/.bashrc || echo 'sudo su -' >> /home/vagrant/.bashrc
+
+      # Update & upgrade packages
+      sudo apt-get update
+      sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --with-new-pkgs
+
+      # Install redis
+      sudo apt-get install -y redis-server
+
+      # Install node.js
+      curl -sL https://deb.nodesource.com/setup_12.x | sudo bash -
+      sudo apt-get install -y nodejs
+
+      # Other provisioning commands you may want to run
+
+   SHELL
+end
+```
+
+The essential vagrant commands are:
+- `vagrant up` to create the environment (if it doesn't exist) or to start it (if it already exists).
+- `vagrant ssh` to enter the environment (once it's created).
+- `vagrant halt` to shut down the environment.
+- `vagrant destroy` to destroy the environment (WARNING: this will erase all the files within your environment!).
 
 ## Future directions
 
